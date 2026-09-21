@@ -6,6 +6,6 @@
     "core:default",
     "notification:default",
     "dialog:default",
-    "opener:allow-open-url"
+    "opener:default"
   ]
 }
