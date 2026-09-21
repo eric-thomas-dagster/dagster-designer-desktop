@@ -64,18 +64,67 @@ fn uv_path(app: &tauri::AppHandle) -> PathBuf {
     }
 }
 
+/// Small persisted app preferences, currently just the projects folder.
+/// Lives in the (hidden) app-data dir -- it's the *pointer* to where
+/// projects live that's fine to keep out of sight, not the projects
+/// themselves. Separate from the backend's own data_dir (git clone
+/// workspace, etc.), which stays under app-data unconditionally.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct Preferences {
+    projects_dir: Option<PathBuf>,
+}
+
+fn preferences_path(app: &tauri::AppHandle) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .expect("could not resolve app data dir")
+        .join("preferences.json")
+}
+
+fn load_preferences(app: &tauri::AppHandle) -> Preferences {
+    std::fs::read_to_string(preferences_path(app))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_preferences(app: &tauri::AppHandle, prefs: &Preferences) -> Result<(), String> {
+    let path = preferences_path(app);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(prefs).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| e.to_string())
+}
+
+/// Where user projects live. Unlike the backend's own working data (git
+/// clone cache, etc, which stays under the hidden app-data dir
+/// unconditionally), this is user-visible and user-choosable via the
+/// Settings dialog (see the get/set_projects_dir commands below) --
+/// defaulting to a plain folder under Documents rather than
+/// ~/Library/Application Support/..., which most people never look inside.
+fn resolve_projects_dir(app: &tauri::AppHandle) -> PathBuf {
+    if let Some(dir) = load_preferences(app).projects_dir {
+        return dir;
+    }
+    app.path()
+        .document_dir()
+        .unwrap_or_else(|_| app.path().app_data_dir().expect("could not resolve app data dir"))
+        .join("Dagster Designer")
+}
+
 fn spawn_backend(app: &tauri::AppHandle) -> Child {
     let dir = backend_dir(app);
     let uv = uv_path(app);
 
-    // User projects MUST live outside the app bundle/build output. The
-    // backend defaults to ./data and ./projects relative to its CWD, which
-    // is `dir` above -- fine in a stable dev checkout, but in a packaged
-    // app `dir` is inside Resources/, which `tauri build` regenerates from
-    // scratch on every rebuild, silently deleting every project the user
-    // ever created. Point it at Tauri's app-data dir instead (macOS:
-    // ~/Library/Application Support/<bundle id>/), which survives rebuilds,
-    // reinstalls, and app updates. pydantic-settings picks up DATA_DIR /
+    // The backend defaults to ./data and ./projects relative to its CWD,
+    // which is `dir` above -- fine in a stable dev checkout, but in a
+    // packaged app `dir` is inside Resources/, which `tauri build`
+    // regenerates from scratch on every rebuild, silently deleting
+    // everything there. data_dir (backend-internal working state) goes
+    // under Tauri's app-data dir, which survives rebuilds, reinstalls, and
+    // app updates; projects_dir is user-visible and user-configurable (see
+    // resolve_projects_dir). pydantic-settings picks up DATA_DIR /
     // PROJECTS_DIR automatically (env vars map to Settings field names) --
     // no backend code change needed.
     let app_data_dir = app
@@ -83,6 +132,8 @@ fn spawn_backend(app: &tauri::AppHandle) -> Child {
         .app_data_dir()
         .expect("could not resolve app data dir");
     std::fs::create_dir_all(&app_data_dir).expect("could not create app data dir");
+    let projects_dir = resolve_projects_dir(app);
+    std::fs::create_dir_all(&projects_dir).expect("could not create projects dir");
 
     // stdout/stderr MUST go somewhere that never blocks. `Stdio::piped()`
     // gives the child an OS pipe with a small (~64KB on macOS) kernel
@@ -111,7 +162,7 @@ fn spawn_backend(app: &tauri::AppHandle) -> Child {
         ])
         .current_dir(&dir)
         .env("DATA_DIR", app_data_dir.join("data"))
-        .env("PROJECTS_DIR", app_data_dir.join("projects"))
+        .env("PROJECTS_DIR", &projects_dir)
         .stdout(Stdio::from(stdout_log))
         .stderr(Stdio::from(stderr_log))
         .spawn()
@@ -332,6 +383,33 @@ fn set_page_menu(app: AppHandle, title: Option<String>, actions: Vec<PageAction>
     Ok(())
 }
 
+/// Current projects folder, for the Settings dialog to display.
+#[tauri::command]
+fn get_projects_dir(app: AppHandle) -> String {
+    resolve_projects_dir(&app).to_string_lossy().into_owned()
+}
+
+/// Changes where new projects are created and restarts the backend pointed
+/// at the new folder, so it takes effect immediately without a full app
+/// restart. Existing projects are NOT moved -- they simply stop showing up
+/// (the files are untouched; moving the folder yourself would work, except
+/// each project's own .venv embeds absolute paths and wouldn't survive the
+/// move without being recreated, so we don't attempt that automatically).
+#[tauri::command]
+fn set_projects_dir(app: AppHandle, path: String) -> Result<(), String> {
+    let new_dir = PathBuf::from(path);
+    std::fs::create_dir_all(&new_dir).map_err(|e| format!("could not create {new_dir:?}: {e}"))?;
+
+    save_preferences(&app, &Preferences { projects_dir: Some(new_dir) })?;
+
+    kill_backend(&app);
+    let child = spawn_backend(&app);
+    let state: State<BackendProcess> = app.state();
+    *state.0.lock().unwrap() = Some(child);
+    wait_for_backend(BACKEND_PORT);
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(BackendProcess(Mutex::new(None)))
@@ -367,7 +445,7 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![set_page_menu])
+        .invoke_handler(tauri::generate_handler![set_page_menu, get_projects_dir, set_projects_dir])
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
             if id == "quit" {
