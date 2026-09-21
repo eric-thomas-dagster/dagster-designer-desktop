@@ -320,6 +320,23 @@ fn main() {
             let menu = build_menu(&handle, None)?;
             app.set_menu(menu)?;
 
+            // Frosted-glass background behind the window content. Only the
+            // nav sidebar is actually translucent (see App.tsx / index.css)
+            // -- the main content area stays opaque -- so this only shows
+            // through there. `Sidebar` is macOS's own material for exactly
+            // this pattern (Finder/Mail's sidebar): it renders light in
+            // light mode and dark in dark mode, matching the nav rail's own
+            // adaptive color classes below rather than fighting them.
+            #[cfg(target_os = "macos")]
+            {
+                use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(e) = apply_vibrancy(&window, NSVisualEffectMaterial::Sidebar, None, None) {
+                        eprintln!("apply_vibrancy failed: {e}");
+                    }
+                }
+            }
+
             Ok(())
         })
         .plugin(tauri_plugin_notification::init())

@@ -17,12 +17,16 @@
         "width": 1440,
         "height": 900,
         "minWidth": 1024,
-        "minHeight": 700
+        "minHeight": 700,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "transparent": true
       }
     ],
     "security": {
       "csp": null
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,
