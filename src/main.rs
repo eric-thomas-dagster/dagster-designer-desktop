@@ -63,6 +63,21 @@ fn spawn_backend(app: &tauri::AppHandle) -> Child {
         .expect("could not resolve app data dir");
     std::fs::create_dir_all(&app_data_dir).expect("could not create app data dir");
 
+    // stdout/stderr MUST go somewhere that never blocks. `Stdio::piped()`
+    // gives the child an OS pipe with a small (~64KB on macOS) kernel
+    // buffer; since nothing here ever reads from it, the backend's own
+    // print()s (this codebase has plenty, including full CLI install
+    // output) eventually fill that buffer and the next write() blocks --
+    // freezing the entire single-process backend, silently hanging every
+    // subsequent HTTP request with no error anywhere. A log file has no
+    // such limit, so redirect to one instead.
+    let log_path = app_data_dir.join("backend.log");
+    let stdout_log = std::fs::File::create(&log_path)
+        .unwrap_or_else(|e| panic!("could not create backend log at {log_path:?}: {e}"));
+    let stderr_log = stdout_log
+        .try_clone()
+        .expect("could not clone backend log handle");
+
     Command::new("uv")
         .args([
             "run",
@@ -76,8 +91,8 @@ fn spawn_backend(app: &tauri::AppHandle) -> Child {
         .current_dir(&dir)
         .env("DATA_DIR", app_data_dir.join("data"))
         .env("PROJECTS_DIR", app_data_dir.join("projects"))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::from(stdout_log))
+        .stderr(Stdio::from(stderr_log))
         .spawn()
         .unwrap_or_else(|e| {
             panic!(
