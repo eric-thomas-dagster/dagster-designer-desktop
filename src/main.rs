@@ -113,7 +113,36 @@ fn resolve_projects_dir(app: &tauri::AppHandle) -> PathBuf {
         .join("Dagster Designer")
 }
 
+/// Kills whatever's already listening on `port`, if anything. Guards
+/// against a stale backend surviving from a previous run -- a crash, or
+/// (what actually happened during testing) the app bundle on disk getting
+/// replaced by a fresh install while an old instance was still running.
+/// That old backend's working directory reference goes stale the moment
+/// the bundle it pointed into is replaced, but the process itself doesn't
+/// die and keeps squatting on the port -- so our own backend fails to
+/// bind, and every request silently hits the broken orphan instead,
+/// producing confusing "No such file or directory" errors that have
+/// nothing to do with whatever the user actually clicked.
+fn kill_stale_backend_on_port(port: u16) {
+    let Ok(output) = Command::new("lsof").args(["-ti", &format!(":{port}")]).output() else {
+        return;
+    };
+    let pids = String::from_utf8_lossy(&output.stdout);
+    let mut killed_any = false;
+    for pid in pids.lines().filter(|l| !l.is_empty()) {
+        eprintln!("Killing stale process on port {port}: pid {pid}");
+        let _ = Command::new("kill").args(["-9", pid]).status();
+        killed_any = true;
+    }
+    if killed_any {
+        // Give the OS a moment to actually release the port before we try
+        // to bind it ourselves.
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
 fn spawn_backend(app: &tauri::AppHandle) -> Child {
+    kill_stale_backend_on_port(BACKEND_PORT);
     let dir = backend_dir(app);
     let uv = uv_path(app);
 
@@ -412,6 +441,20 @@ fn set_projects_dir(app: AppHandle, path: String) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
+        // Must be the first plugin registered. If the app is already
+        // running, this fires in that existing instance instead of
+        // letting a second one fully launch -- prevents two backends
+        // ever fighting over the same port in the first place (rather
+        // than just cleaning up after the fact, like
+        // kill_stale_backend_on_port does for the cases this can't
+        // prevent, e.g. a previous crash).
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .manage(BackendProcess(Mutex::new(None)))
         .setup(|app| {
             let handle = app.handle().clone();
