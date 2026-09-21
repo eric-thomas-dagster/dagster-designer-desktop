@@ -44,7 +44,8 @@
       "../backend/scripts": "backend/scripts",
       "../backend/pyproject.toml": "backend/pyproject.toml",
       "../backend/uv.lock": "backend/uv.lock",
-      "../backend/requirements.txt": "backend/requirements.txt"
+      "../backend/requirements.txt": "backend/requirements.txt",
+      "vendor/uv/uv": "bin/uv"
     }
   }
 }

@@ -44,8 +44,29 @@ fn backend_dir(app: &tauri::AppHandle) -> PathBuf {
     }
 }
 
+/// The `uv` binary to run the backend with. In a built app this is the copy
+/// bundled by `tauri.conf.json`'s `bundle.resources` (fetched via
+/// `scripts/fetch-uv.sh` before packaging) rather than whatever `uv` happens
+/// to be on the user's PATH -- or nothing at all. `uv` also manages its own
+/// Python installs, downloading one that matches the backend's
+/// `requires-python` on first run if needed, so this is the one binary that
+/// makes the whole app work without Python *or* uv pre-installed. Dev builds
+/// still use PATH, since whoever's building from source already has uv.
+fn uv_path(app: &tauri::AppHandle) -> PathBuf {
+    if cfg!(debug_assertions) {
+        PathBuf::from("uv")
+    } else {
+        app.path()
+            .resource_dir()
+            .expect("could not resolve resource dir")
+            .join("bin")
+            .join("uv")
+    }
+}
+
 fn spawn_backend(app: &tauri::AppHandle) -> Child {
     let dir = backend_dir(app);
+    let uv = uv_path(app);
 
     // User projects MUST live outside the app bundle/build output. The
     // backend defaults to ./data and ./projects relative to its CWD, which
@@ -78,7 +99,7 @@ fn spawn_backend(app: &tauri::AppHandle) -> Child {
         .try_clone()
         .expect("could not clone backend log handle");
 
-    Command::new("uv")
+    Command::new(&uv)
         .args([
             "run",
             "uvicorn",
@@ -96,9 +117,9 @@ fn spawn_backend(app: &tauri::AppHandle) -> Child {
         .spawn()
         .unwrap_or_else(|e| {
             panic!(
-                "failed to start the Dagster Designer backend via `uv run` in {:?}: {e}\n\
-                 Make sure `uv` is installed and on PATH (https://docs.astral.sh/uv/).",
-                dir
+                "failed to start the Dagster Designer backend via `{:?} run` in {:?}: {e}\n\
+                 In a dev build, make sure `uv` is installed and on PATH (https://docs.astral.sh/uv/).",
+                uv, dir
             )
         })
 }
@@ -106,15 +127,19 @@ fn spawn_backend(app: &tauri::AppHandle) -> Child {
 /// Blocks (briefly, off the main thread via setup being sync-but-early) until
 /// the backend is accepting connections, so the window doesn't flash a
 /// connection-refused error while `uv` is still resolving/starting uvicorn.
+/// Generous timeout because on a brand new install, `uv` may need to
+/// download a Python build plus dagster and friends from PyPI before
+/// uvicorn even starts -- a plain PATH `uv` with an already-warm cache
+/// would normally be ready in a couple of seconds.
 fn wait_for_backend(port: u16) {
     let addr = format!("127.0.0.1:{port}");
-    for _ in 0..120 {
+    for _ in 0..600 {
         if TcpStream::connect(&addr).is_ok() {
             return;
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    eprintln!("warning: backend did not become ready on {addr} within 60s; continuing anyway");
+    eprintln!("warning: backend did not become ready on {addr} within 5m; continuing anyway");
 }
 
 /// Kills the backend child process, if any. Shared by every quit path
