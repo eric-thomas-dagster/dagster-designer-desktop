@@ -436,6 +436,24 @@ fn build_menu(
     builder.item(&window_menu).build()
 }
 
+/// Asks the frontend whether it's OK to quit, instead of exiting outright.
+/// Shared by every quit path (red-button close, Cmd+Q, Dock > Quit) so none
+/// of them can blow away unsaved Code Editor / Env Vars edits with no
+/// warning -- see the `quit-requested` listener in App.tsx, which confirms
+/// with the user when needed and then calls back into `confirm_quit`.
+fn request_quit(app: &AppHandle) {
+    let _ = app.emit("quit-requested", ());
+}
+
+/// The frontend's go-ahead to actually quit (see `request_quit`), invoked
+/// either immediately (nothing unsaved) or after the user confirms losing
+/// unsaved edits.
+#[tauri::command]
+fn confirm_quit(app: AppHandle) {
+    kill_backend(&app);
+    app.exit(0);
+}
+
 #[tauri::command]
 fn set_page_menu(app: AppHandle, title: Option<String>, actions: Vec<PageAction>) -> Result<(), String> {
     let page = title.as_deref().map(|t| (t, actions.as_slice()));
@@ -520,12 +538,16 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![set_page_menu, get_projects_dir, set_projects_dir])
+        .invoke_handler(tauri::generate_handler![
+            set_page_menu,
+            get_projects_dir,
+            set_projects_dir,
+            confirm_quit
+        ])
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
             if id == "quit" {
-                kill_backend(app);
-                app.exit(0);
+                request_quit(app);
                 return;
             }
             if id.starts_with("project:")
@@ -541,9 +563,15 @@ fn main() {
             }
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                kill_backend(window.app_handle());
-                window.app_handle().exit(0);
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Always intercept first and ask the frontend -- it decides
+                // whether to actually quit (via `confirm_quit`) based on
+                // whether there's unsaved work, prompting the user first if
+                // so. Without `prevent_default()` the window (and the whole
+                // single-window app with it) would already be gone by the
+                // time that round trip comes back.
+                api.prevent_close();
+                request_quit(window.app_handle());
             }
         })
         .run(tauri::generate_context!())
