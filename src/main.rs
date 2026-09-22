@@ -248,12 +248,21 @@ fn wait_for_backend(port: u16) {
 /// Kills the backend child process, if any. Shared by every quit path
 /// (red-button close, Cmd+Q, Dock > Quit) so none of them can leave an
 /// orphaned `uv run uvicorn` process behind.
+///
+/// `child.kill()` alone only signals the tracked `uv run uvicorn` process --
+/// `uv run` execs a real child `uvicorn` subprocess rather than replacing
+/// itself, so SIGKILLing just the `uv` PID leaves that grandchild orphaned
+/// and still bound to the port (confirmed live: it survives every quit).
+/// Falling back to the same lsof-by-port kill already used to clean up a
+/// previous run's stale backend on startup catches it regardless of process
+/// tree depth.
 fn kill_backend(app: &AppHandle) {
     let state: State<BackendProcess> = app.state();
     let taken = state.0.lock().unwrap().take();
     if let Some(mut child) = taken {
         let _ = child.kill();
     }
+    kill_stale_backend_on_port(BACKEND_PORT);
 }
 
 /// A standard macOS menu bar (app / Edit / Window). Without this, the app
