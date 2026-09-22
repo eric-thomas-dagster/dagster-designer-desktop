@@ -97,20 +97,43 @@ fn save_preferences(app: &tauri::AppHandle, prefs: &Preferences) -> Result<(), S
     std::fs::write(path, json).map_err(|e| e.to_string())
 }
 
-/// Where user projects live. Unlike the backend's own working data (git
-/// clone cache, etc, which stays under the hidden app-data dir
-/// unconditionally), this is user-visible and user-choosable via the
-/// Settings dialog (see the get/set_projects_dir commands below) --
-/// defaulting to a plain folder under Documents rather than
-/// ~/Library/Application Support/..., which most people never look inside.
+/// Where user projects live. Unlike the backend's own internal working data
+/// (git clone cache etc, which stays under `app_data_dir`/data unconditionally),
+/// this is user-visible and user-choosable via the Settings dialog (see the
+/// get/set_projects_dir commands below).
+///
+/// Defaults under `app_data_dir` (~/Library/Application Support/...) rather
+/// than ~/Documents -- Documents is one of the folders macOS gates behind a
+/// permission prompt, and that grant is tied to the app binary's code
+/// signature. This app is only ad-hoc signed (no stable Developer ID team
+/// identity), so every rebuild produces a signature TCC has never seen
+/// before and re-prompts, regardless of any grant from a previous build.
+/// Real users installing once won't hit that repeatedly, but it makes every
+/// rebuild during development re-ask -- avoiding ~/Documents by default
+/// sidesteps it entirely. A user who wants projects under Documents (or
+/// anywhere else) can still point there via Settings; that grant comes from
+/// the folder picker (NSOpenPanel), which isn't tied to code-signing
+/// identity and survives rebuilds fine.
 fn resolve_projects_dir(app: &tauri::AppHandle) -> PathBuf {
     if let Some(dir) = load_preferences(app).projects_dir {
         return dir;
     }
+    // Existing installs from before this default changed already have real
+    // projects sitting under the old ~/Documents location with no saved
+    // preference pointing at it (they were always just relying on this same
+    // fallback) -- keep resolving there for them instead of silently
+    // switching to a new, empty folder and making their projects vanish.
+    // Only a genuinely fresh install (no preference, nothing under the old
+    // default yet) gets the new location.
+    if let Some(old_default) = app.path().document_dir().ok().map(|d| d.join("Dagster Designer")) {
+        if old_default.is_dir() {
+            return old_default;
+        }
+    }
     app.path()
-        .document_dir()
-        .unwrap_or_else(|_| app.path().app_data_dir().expect("could not resolve app data dir"))
-        .join("Dagster Designer")
+        .app_data_dir()
+        .expect("could not resolve app data dir")
+        .join("Projects")
 }
 
 /// Kills whatever's already listening on `port`, if anything. Guards
