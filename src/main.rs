@@ -146,6 +146,7 @@ fn resolve_projects_dir(app: &tauri::AppHandle) -> PathBuf {
 /// bind, and every request silently hits the broken orphan instead,
 /// producing confusing "No such file or directory" errors that have
 /// nothing to do with whatever the user actually clicked.
+#[cfg(not(target_os = "windows"))]
 fn kill_stale_backend_on_port(port: u16) {
     let Ok(output) = Command::new("lsof").args(["-ti", &format!(":{port}")]).output() else {
         return;
@@ -160,6 +161,37 @@ fn kill_stale_backend_on_port(port: u16) {
     if killed_any {
         // Give the OS a moment to actually release the port before we try
         // to bind it ourselves.
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Windows has no `lsof`. `netstat -ano` is the closest built-in
+/// equivalent (available since XP, no PowerShell dependency) -- parse its
+/// fixed-width-ish columns for a LISTENING line on our port and grab the
+/// last column (PID), then `taskkill /F` it. Same purpose as the Unix
+/// version above: without this, an orphaned backend from a previous run
+/// (crash, or the app bundle getting rebuilt while an old instance was
+/// still running) squats on the port forever, since nothing here ever
+/// killed it -- confirmed live: this exact scenario during development.
+#[cfg(target_os = "windows")]
+fn kill_stale_backend_on_port(port: u16) {
+    let Ok(output) = Command::new("netstat").args(["-ano"]).output() else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let needle = format!(":{port} ");
+    let mut killed_any = false;
+    for line in text.lines() {
+        if line.contains(&needle) && line.contains("LISTENING") {
+            let Some(pid) = line.split_whitespace().last() else {
+                continue;
+            };
+            eprintln!("Killing stale process on port {port}: pid {pid}");
+            let _ = Command::new("taskkill").args(["/F", "/PID", pid]).status();
+            killed_any = true;
+        }
+    }
+    if killed_any {
         std::thread::sleep(Duration::from_millis(500));
     }
 }
