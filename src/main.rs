@@ -575,6 +575,29 @@ fn main() {
                 }
             }
 
+            // Windows equivalent of the above -- Mica is the Windows 11
+            // "Fluent Design" material (Settings, File Explorer use it),
+            // falling back to Acrylic on Windows 10 where Mica isn't
+            // available. Applied to the window frame/background rather
+            // than re-enabling window-level transparency: combining a
+            // transparent native window with WebView2's own compositing
+            // is what made the nav sidebar render fully invisible instead
+            // of blurred (see tauri.windows.conf.json) -- this gets the
+            // modern frame look without reintroducing that. Making the
+            // sidebar's own translucency work on Windows too is a
+            // separate follow-up, not attempted here blind.
+            #[cfg(target_os = "windows")]
+            {
+                use window_vibrancy::{apply_acrylic, apply_mica};
+                if let Some(window) = app.get_webview_window("main") {
+                    if apply_mica(&window, None).is_err() {
+                        if let Err(e) = apply_acrylic(&window, None) {
+                            eprintln!("apply_acrylic failed: {e}");
+                        }
+                    }
+                }
+            }
+
             Ok(())
         })
         .plugin(tauri_plugin_notification::init())
