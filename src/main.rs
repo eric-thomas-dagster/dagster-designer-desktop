@@ -247,6 +247,16 @@ fn spawn_backend(app: &tauri::AppHandle) -> Child {
         .current_dir(&dir)
         .env("DATA_DIR", app_data_dir.join("data"))
         .env("PROJECTS_DIR", &projects_dir)
+        // Windows defaults text I/O to the system code page (cp1252
+        // observed) rather than UTF-8 -- this codebase writes plenty of
+        // emoji into generated files (definitions.py comments, etc.), not
+        // just stdout (see main.py's own stdout/stderr reconfigure, which
+        // only covers printing, not arbitrary open()/write() calls
+        // elsewhere). PYTHONUTF8 forces UTF-8 as the default everywhere in
+        // this process, closing the whole class of bug instead of hunting
+        // down each open() call individually. No-op on macOS/Linux, which
+        // are already UTF-8.
+        .env("PYTHONUTF8", "1")
         .stdout(Stdio::from(stdout_log))
         .stderr(Stdio::from(stderr_log))
         .spawn()
