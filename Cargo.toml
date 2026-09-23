@@ -15,8 +15,12 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-[target.'cfg(target_os = "macos")'.dependencies]
+# Cross-platform by design -- its own apply_vibrancy/apply_mica/apply_acrylic
+# are individually cfg-gated per OS internally (with a graceful
+# UnsupportedPlatform error on anything else), so it doesn't need to be
+# scoped to a single target.'cfg(...)' platform the way it was before --
+# that's exactly why the Windows build failed to link it at all despite
+# main.rs's own #[cfg(target_os = "windows")] call to it.
 window-vibrancy = "0.6"
 
 [profile.release]
