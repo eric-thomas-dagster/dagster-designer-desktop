@@ -134,10 +134,21 @@ fn resolve_projects_dir(app: &tauri::AppHandle) -> PathBuf {
             return old_default;
         }
     }
+    // Lowercase to match Python's own default (Path("./projects") in
+    // core/config.py) and every project folder that's actually existed on
+    // disk so far. macOS/Windows both silently tolerate a case mismatch
+    // here (case-insensitive-but-preserving filesystems), which is exactly
+    // how this went unnoticed: file access "works" either way, but dg's
+    // own internal project-root check does a strict string comparison
+    // against this exact value and correctly flags the two as different --
+    // "active virtual environment" vs "project virtual environment" --
+    // confirmed live via a real PROJECTS_DIR=.../Projects env var next to
+    // an on-disk .../projects/ folder. Harmless-looking warning on macOS,
+    // but a genuinely broken path on any case-sensitive filesystem (Linux).
     app.path()
         .app_data_dir()
         .expect("could not resolve app data dir")
-        .join("Projects")
+        .join("projects")
 }
 
 /// Kills whatever's already listening on `port`, if anything. Guards
