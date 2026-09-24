@@ -312,6 +312,9 @@ fn kill_backend(app: &AppHandle) {
 /// don't work in text fields by default: macOS dispatches those as menu
 /// commands (`copy:`, `paste:`, ...) down the responder chain, and WKWebView
 /// only receives them when a matching Edit-menu item exists to send them.
+/// macOS-only (see call sites) -- gated here too so a non-macOS build
+/// doesn't warn about this being unused dead code.
+#[cfg(target_os = "macos")]
 fn build_menu(
     app: &AppHandle,
     page: Option<(&str, &[PageAction])>,
@@ -498,10 +501,26 @@ fn confirm_quit(app: AppHandle) {
 
 #[tauri::command]
 fn set_page_menu(app: AppHandle, title: Option<String>, actions: Vec<PageAction>) -> Result<(), String> {
-    let page = title.as_deref().map(|t| (t, actions.as_slice()));
-    let menu = build_menu(&app, page).map_err(|e| e.to_string())?;
-    app.set_menu(menu).map_err(|e| e.to_string())?;
-    Ok(())
+    // This whole native menu bar is a macOS-only convention (see build_menu)
+    // -- every item mirrors an in-app button/dropdown, a native OS window
+    // control already in the Windows title bar, or copy/paste (which
+    // Chromium/WebView2 already handles natively without one, unlike
+    // WKWebView). A traditional File/Edit/View dropdown menu bar is also
+    // exactly the visual signature that reads as a dated Windows app in
+    // 2026 rather than a modern one, so skip it there instead of forcing
+    // a Mac-native UI pattern onto a platform it doesn't fit.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (title, actions);
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let page = title.as_deref().map(|t| (t, actions.as_slice()));
+        let menu = build_menu(&app, page).map_err(|e| e.to_string())?;
+        app.set_menu(menu).map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 /// Current projects folder, for the Settings dialog to display.
@@ -555,8 +574,15 @@ fn main() {
             *state.0.lock().unwrap() = Some(child);
             wait_for_backend(BACKEND_PORT);
 
-            let menu = build_menu(&handle, None)?;
-            app.set_menu(menu)?;
+            // macOS-only menu bar -- see set_page_menu for why (every item
+            // mirrors in-app UI or a native OS control, and a traditional
+            // dropdown menu bar reads as a dated Windows app, not a modern
+            // one, in 2026).
+            #[cfg(target_os = "macos")]
+            {
+                let menu = build_menu(&handle, None)?;
+                app.set_menu(menu)?;
+            }
 
             // Frosted-glass background behind the window content. Only the
             // nav sidebar is actually translucent (see App.tsx / index.css)
