@@ -337,14 +337,19 @@ fn build_menu(
     let quit = MenuItemBuilder::with_id("quit", "Quit Dagster Designer")
         .accelerator("CmdOrCtrl+Q")
         .build(app)?;
+    // Preferences (⌘,) is the macOS-conventional slot for "how this app
+    // behaves for you" -- kept separate from Settings (API keys, projects
+    // folder, GitHub), which is config you set once and rarely revisit.
     let preferences = MenuItemBuilder::with_id("app:preferences", "Preferences…")
         .accelerator("CmdOrCtrl+,")
         .build(app)?;
+    let settings = MenuItemBuilder::with_id("app:settings", "Settings…").build(app)?;
 
     let app_menu = SubmenuBuilder::new(app, "Dagster Designer")
         .item(&PredefinedMenuItem::about(app, None, None)?)
         .separator()
         .item(&preferences)
+        .item(&settings)
         .separator()
         .item(&PredefinedMenuItem::services(app, None)?)
         .separator()
