@@ -7,6 +7,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
+#[cfg(target_os = "macos")]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -15,8 +16,11 @@ use tauri::{AppHandle, Emitter, Manager, State};
 /// `id` is whatever the page wants back in the "menu-action" event; it's
 /// namespaced with the page title before reaching the menu so two pages
 /// using the same short id (e.g. both calling theirs "refresh") can't
-/// collide.
+/// collide. Only build_menu (macOS-only, see below) actually reads these
+/// fields back out -- on other platforms set_page_menu just discards the
+/// whole struct, which is why the fields need allow(dead_code) there.
 #[derive(serde::Deserialize)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct PageAction {
     id: String,
     label: String,
@@ -511,7 +515,7 @@ fn set_page_menu(app: AppHandle, title: Option<String>, actions: Vec<PageAction>
     // a Mac-native UI pattern onto a platform it doesn't fit.
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (title, actions);
+        let _ = (app, title, actions);
         return Ok(());
     }
     #[cfg(target_os = "macos")]
