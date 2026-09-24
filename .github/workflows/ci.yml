@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  cargo-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      # This repo (dagster-designer-desktop) is normally cloned as a
+      # subfolder of the main dagster_designer repo, named exactly
+      # `src-tauri` -- tauri.conf.json's bundle.resources references
+      # `../backend/...` relative to that, and tauri-build's build script
+      # validates those paths eagerly, even for a plain `cargo check` (not
+      # just `tauri build`). So this needs both repos checked out into that
+      # same relative layout, not just this one on its own.
+      - name: Checkout main repo (for ../backend resources)
+        uses: actions/checkout@v4
+        with:
+          repository: eric-thomas-dagster/dagster_designer
+          path: dagster_designer
+      - name: Checkout this repo into dagster_designer/src-tauri
+        uses: actions/checkout@v4
+        with:
+          path: dagster_designer/src-tauri
+      # vendor/uv/{uv,uvx} are real uv binaries normally fetched by
+      # fetch-uv.sh (Mac) / downloaded manually (Windows, see the Windows
+      # Dev Setup doc) -- not checked into git. Only their *existence* is
+      # validated at check/build time, not their contents, so empty
+      # placeholders are enough for a compile check.
+      - name: Create placeholder vendor/uv binaries
+        shell: bash
+        run: |
+          mkdir -p dagster_designer/src-tauri/vendor/uv
+          touch dagster_designer/src-tauri/vendor/uv/uv dagster_designer/src-tauri/vendor/uv/uvx
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dagster_designer/src-tauri
+      # Deliberately not -D warnings: that would apply to every dependency
+      # crate compiled in the same graph too, not just this one, and a
+      # published dependency's own warning isn't ours to fix or block a
+      # merge over. Plain `cargo check` already catches everything that
+      # actually broke this build this session (the window-vibrancy Cargo
+      # scoping error, the invalid core:window permission) -- both were
+      # hard compile failures, not warnings.
+      - name: cargo check
+        working-directory: dagster_designer/src-tauri
+        run: cargo check --all-targets
