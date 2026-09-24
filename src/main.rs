@@ -621,6 +621,16 @@ fn main() {
                             eprintln!("apply_acrylic failed: {e}");
                         }
                     }
+                    // decorations:false (tauri.windows.conf.json) drops Windows'
+                    // own drop shadow *and* Windows 11's automatic corner
+                    // rounding -- both are tied to the native title bar we just
+                    // removed. set_shadow(true) is the documented way to get
+                    // both back on an undecorated window (see its doc comment
+                    // in tauri's webview_window.rs) without reaching for raw
+                    // DWM calls.
+                    if let Err(e) = window.set_shadow(true) {
+                        eprintln!("set_shadow failed: {e}");
+                    }
                 }
             }
 
