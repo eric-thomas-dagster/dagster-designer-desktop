@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      # Same sibling-repo layout as ci.yml, but this time frontend/ is
+      # needed too (beforeBuildCommand actually builds it for real here,
+      # not just checked for path existence).
+      - name: Checkout main repo (for ../backend and ../frontend)
+        uses: actions/checkout@v4
+        with:
+          repository: eric-thomas-dagster/dagster_designer
+          path: dagster_designer
+      - name: Checkout this repo into dagster_designer/src-tauri
+        uses: actions/checkout@v4
+        with:
+          path: dagster_designer/src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dagster_designer/src-tauri
+
+      - name: npm ci (root, for the tauri CLI)
+        working-directory: dagster_designer
+        run: npm ci
+      - name: npm ci (frontend)
+        working-directory: dagster_designer/frontend
+        run: npm ci
+
+      # Real uv binaries this time (unlike ci.yml's empty placeholders) --
+      # fetch-uv.mjs dispatches to fetch-uv.sh (macOS, universal2 via lipo)
+      # or its own Windows zip-extract path.
+      - name: Build installer
+        working-directory: dagster_designer
+        run: npm run app:build
+
+      - name: Locate built installer(s)
+        id: artifacts
+        shell: bash
+        working-directory: dagster_designer/src-tauri/target/release/bundle
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            cp dmg/*.dmg "$GITHUB_WORKSPACE/out/"
+          else
+            find msi nsis -type f \( -name "*.msi" -o -name "*.exe" \) -exec cp {} "$GITHUB_WORKSPACE/out/" \;
+          fi
+          ls -la "$GITHUB_WORKSPACE/out"
+
+      - name: Publish to the rolling "latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          body: |
+            Automatically built from the latest `main` commit on every push. Not a stable version -- just the most recent working build of each platform's installer.
+          make_latest: true
+          files: out/*

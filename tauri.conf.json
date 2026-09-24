@@ -5,7 +5,7 @@
   "identifier": "com.dagsterlabs.designer",
   "build": {
     "beforeDevCommand": "npm run dev --prefix frontend",
-    "beforeBuildCommand": "VITE_API_BASE=http://127.0.0.1:8000/api/v1 npm run build --prefix frontend",
+    "beforeBuildCommand": "npm run build --prefix frontend",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../frontend/dist"
   },
