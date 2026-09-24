@@ -337,19 +337,23 @@ fn build_menu(
     let quit = MenuItemBuilder::with_id("quit", "Quit Dagster Designer")
         .accelerator("CmdOrCtrl+Q")
         .build(app)?;
-    // Preferences (⌘,) is the macOS-conventional single slot for "how this
-    // app behaves for you" -- native Mac apps never show a second item next
-    // to it, so Settings (API keys, projects folder, GitHub -- config set
-    // once and rarely revisited) isn't in this menu at all; it's reachable
-    // from the nav rail's gear icon instead (see App.tsx).
-    let preferences = MenuItemBuilder::with_id("app:preferences", "Preferences…")
+    // This is the app-menu's conventional ⌘, slot -- since macOS Ventura,
+    // AppKit displays it as "Settings…" no matter what label we pass here
+    // (the OS pushed its System Preferences -> System Settings rename onto
+    // every app's menu bar for this specific item), so there's no way to
+    // make this native menu item actually say "Preferences" anymore. Wire
+    // it to the real Settings dialog (API keys, projects folder, GitHub)
+    // to match what it will visibly say; the newer, lighter-weight
+    // Preferences (appearance, group-by-location, ...) only has its own
+    // nav-rail icon (see App.tsx), which isn't subject to this OS quirk.
+    let settings = MenuItemBuilder::with_id("app:settings", "Settings…")
         .accelerator("CmdOrCtrl+,")
         .build(app)?;
 
     let app_menu = SubmenuBuilder::new(app, "Dagster Designer")
         .item(&PredefinedMenuItem::about(app, None, None)?)
         .separator()
-        .item(&preferences)
+        .item(&settings)
         .separator()
         .item(&PredefinedMenuItem::services(app, None)?)
         .separator()
