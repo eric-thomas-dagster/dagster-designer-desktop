@@ -596,7 +596,26 @@ fn main() {
             let child = spawn_backend(&handle);
             let state: State<BackendProcess> = app.state();
             *state.0.lock().unwrap() = Some(child);
-            wait_for_backend(BACKEND_PORT);
+
+            // wait_for_backend polls for up to 5 minutes (uv sync + uvicorn
+            // boot on a cold cache can genuinely take that long) -- calling
+            // it inline here used to block .setup() itself, which holds the
+            // window from appearing at all until the backend answers.
+            // Poll on a background thread instead and emit "backend-ready"
+            // once it is; App.tsx listens for that event and shows a
+            // startup splash (BrandMark + spinner) in the meantime instead
+            // of a blank/frozen window.
+            //
+            // Confirmed missing entirely before this fix: the frontend's
+            // splash-dismiss listener existed (merged from the Windows
+            // testing pass) but nothing on the Rust side ever emitted the
+            // event it was waiting for, so the splash never went away on
+            // any platform, not just Windows.
+            let ready_handle = handle.clone();
+            std::thread::spawn(move || {
+                wait_for_backend(BACKEND_PORT);
+                let _ = ready_handle.emit("backend-ready", ());
+            });
 
             // macOS-only menu bar -- see set_page_menu for why (every item
             // mirrors in-app UI or a native OS control, and a traditional
