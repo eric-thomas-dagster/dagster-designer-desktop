@@ -302,6 +302,23 @@ fn wait_for_backend(port: u16) {
     eprintln!("warning: backend did not become ready on {addr} within 5m; continuing anyway");
 }
 
+/// Asks the backend to stop every `dg dev` it may have spawned for any
+/// project (see /dagster-ui/stop-all) before we kill the backend itself.
+/// The backend starts those with start_new_session=True so they survive
+/// the backend process dying -- confirmed live via `ps aux` showing dozens
+/// of `dg dev` processes for the same projects accumulated across many past
+/// sessions, since nothing ever told them to stop. Best-effort: a short
+/// curl timeout so a hung/unresponsive backend never delays quit, and `-s`
+/// so a missing/old backend binary without this route doesn't print
+/// anything. Shells out rather than adding an HTTP client crate, matching
+/// how this file already shells out to lsof/netstat/taskkill elsewhere.
+fn stop_all_dev_servers() {
+    let url = format!("http://127.0.0.1:{BACKEND_PORT}/api/v1/dagster-ui/stop-all");
+    let _ = Command::new("curl")
+        .args(["-s", "-m", "3", "-X", "POST", &url])
+        .output();
+}
+
 /// Kills the backend child process, if any. Shared by every quit path
 /// (red-button close, Cmd+Q, Dock > Quit) so none of them can leave an
 /// orphaned `uv run uvicorn` process behind.
@@ -314,6 +331,10 @@ fn wait_for_backend(port: u16) {
 /// previous run's stale backend on startup catches it regardless of process
 /// tree depth.
 fn kill_backend(app: &AppHandle) {
+    // Must happen while the backend is still alive to answer the request --
+    // after child.kill() there's nothing left to ask.
+    stop_all_dev_servers();
+
     let state: State<BackendProcess> = app.state();
     let taken = state.0.lock().unwrap().take();
     if let Some(mut child) = taken {
