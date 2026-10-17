@@ -9,7 +9,38 @@ permissions:
   contents: write
 
 jobs:
+  # What changed since the previous release: the commit subjects in dagster_designer between the commit the
+  # last release recorded ("Built from dagster_designer@<sha>" in its notes) and the one being built now.
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main repo (full history, for the changelog)
+        uses: actions/checkout@v4
+        with:
+          repository: eric-thomas-dagster/dagster_designer
+          fetch-depth: 0
+      - name: Build release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA=$(git rev-parse HEAD)
+          PREV=$(gh release view latest --repo "${{ github.repository }}" --json body -q .body 2>/dev/null | grep -o 'dagster_designer@[0-9a-f]\{7,40\}' | head -1 | cut -d@ -f2 || true)
+          if [ -n "$PREV" ] && git cat-file -e "$PREV^{commit}" 2>/dev/null; then RANGE="$PREV..$SHA"; else RANGE="-30 $SHA"; fi
+          {
+            echo "## What's new"
+            echo
+            git log --no-merges --format='- %s' $RANGE | grep -viE '^- (tests?|ci|chore)(\(.*\))?:' || true
+            echo
+            echo "Built from dagster_designer@${SHA:0:7}"
+          } > notes.md
+          cat notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: notes.md
+
   build:
+    needs: notes
     strategy:
       fail-fast: false
       matrix:
@@ -29,9 +60,21 @@ jobs:
         with:
           path: dagster_designer/src-tauri
 
+      # A real version per build (0.1.<run number>) instead of every installer being "0.1.0", so a build can be
+      # told apart from the last one. MSI needs numeric parts <= 65535, which a run number stays well under.
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Stamp the version into tauri.conf.json
+        shell: bash
+        run: |
+          VERSION="0.1.${{ github.run_number }}"
+          node -e "const fs=require('fs');const p='dagster_designer/src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version='$VERSION';fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n')"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -68,8 +111,17 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: Latest build
-          body: |
-            Automatically built from the latest `main` commit on every push. Not a stable version -- just the most recent working build of each platform's installer.
+          name: Latest build (v${{ env.VERSION }})
+          body_path: release-notes/notes.md
           make_latest: true
+          files: out/*
+
+      # An immutable, versioned copy with the same notes, so an older build stays downloadable.
+      - name: Publish the versioned release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: v${{ env.VERSION }}
+          body_path: release-notes/notes.md
+          make_latest: false
           files: out/*
