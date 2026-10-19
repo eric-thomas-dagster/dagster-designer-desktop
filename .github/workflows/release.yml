@@ -67,9 +67,11 @@ jobs:
           node-version: 20
       - name: Stamp the version into tauri.conf.json
         shell: bash
+        env:
+          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
         run: |
           VERSION="0.1.${{ github.run_number }}"
-          node -e "const fs=require('fs');const p='dagster_designer/src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version='$VERSION';c.bundle.createUpdaterArtifacts=true;fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n')"
+          node -e "const fs=require('fs');const p='dagster_designer/src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version='$VERSION';if(process.env.HAS_KEY==='true')c.bundle.createUpdaterArtifacts=true;fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n')"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
@@ -107,13 +109,17 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/out"
           if [ "${{ runner.os }}" = "macOS" ]; then
             cp dmg/*.dmg "$GITHUB_WORKSPACE/out/"
+            if ls macos/*.app.tar.gz >/dev/null 2>&1; then
             # Update package + signature, under fixed names the manifest job relies on.
             cp macos/*.app.tar.gz "$GITHUB_WORKSPACE/out/Dagster-Designer-darwin-aarch64.app.tar.gz"
             cp macos/*.app.tar.gz.sig "$GITHUB_WORKSPACE/out/Dagster-Designer-darwin-aarch64.app.tar.gz.sig"
+            fi
           else
             find msi nsis -type f \( -name "*.msi" -o -name "*.exe" \) -exec cp {} "$GITHUB_WORKSPACE/out/" \;
-            cp nsis/*-setup.exe "$GITHUB_WORKSPACE/out/Dagster-Designer-windows-x86_64-setup.exe"
-            cp nsis/*-setup.exe.sig "$GITHUB_WORKSPACE/out/Dagster-Designer-windows-x86_64-setup.exe.sig"
+            if ls nsis/*-setup.exe.sig >/dev/null 2>&1; then
+              cp nsis/*-setup.exe "$GITHUB_WORKSPACE/out/Dagster-Designer-windows-x86_64-setup.exe"
+              cp nsis/*-setup.exe.sig "$GITHUB_WORKSPACE/out/Dagster-Designer-windows-x86_64-setup.exe.sig"
+            fi
           fi
           ls -la "$GITHUB_WORKSPACE/out"
 
@@ -145,7 +151,10 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Build and upload latest.json
+        env:
+          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
         run: |
+          if [ "$HAS_KEY" != "true" ]; then echo "No signing key configured; skipping updater manifest"; exit 0; fi
           VERSION="0.1.${{ github.run_number }}"
           REPO="${{ github.repository }}"
           BASE="https://github.com/$REPO/releases/download/v$VERSION"
