@@ -4,12 +4,15 @@
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+use tauri_plugin_updater::UpdaterExt;
 
 /// One action the current page wants reachable from the menu bar (e.g.
 /// Monitors' "Refresh" / "Generate with AI" / "New Monitor" header buttons).
@@ -33,6 +36,28 @@ const BACKEND_PORT: u16 = 8000;
 /// the app quits. Without this the `uv run uvicorn` process would keep
 /// running as an orphan after the window closes.
 struct BackendProcess(Mutex<Option<Child>>);
+
+/// Set once the app is deliberately shutting down (quit or update), so the
+/// watchdog doesn't mistake the backend we just killed for a crash.
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// Shows a native error dialog off the main thread (blocking dialogs deadlock
+/// there on macOS) and optionally exits afterwards. Used instead of panic!,
+/// which with `panic = "abort"` made the app vanish with no explanation.
+fn show_error(app: &AppHandle, title: &str, message: String, exit_after: bool) {
+    let app = app.clone();
+    let title = title.to_string();
+    std::thread::spawn(move || {
+        app.dialog()
+            .message(message)
+            .title(title)
+            .kind(MessageDialogKind::Error)
+            .blocking_show();
+        if exit_after {
+            app.exit(1);
+        }
+    });
+}
 
 /// Where the backend's source lives. In dev, that's the sibling `backend/`
 /// directory in the repo; in a built app, `tauri.conf.json`'s
@@ -169,6 +194,17 @@ fn kill_stale_backend_on_port(port: u16) {
     let pids = String::from_utf8_lossy(&output.stdout);
     let mut killed_any = false;
     for pid in pids.lines().filter(|l| !l.is_empty()) {
+        // Only ever kill what looks like our own backend -- never an
+        // unrelated app that happens to be listening on this port.
+        let cmd = Command::new("ps")
+            .args(["-p", pid, "-o", "command="])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        if !(cmd.contains("uvicorn") && cmd.contains("app.main")) {
+            eprintln!("Port {port} is held by pid {pid} ({}), not ours -- leaving it alone", cmd.trim());
+            continue;
+        }
         eprintln!("Killing stale process on port {port}: pid {pid}");
         let _ = Command::new("kill").args(["-9", pid]).status();
         killed_any = true;
@@ -201,6 +237,17 @@ fn kill_stale_backend_on_port(port: u16) {
             let Some(pid) = line.split_whitespace().last() else {
                 continue;
             };
+            // Only kill python/uv processes (our backend), never an
+            // unrelated app that happens to hold the port.
+            let image = Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
+                .unwrap_or_default();
+            if !(image.contains("python") || image.contains("uvicorn") || image.contains("uv.exe")) {
+                eprintln!("Port {port} is held by pid {pid} ({}), not ours -- leaving it alone", image.trim());
+                continue;
+            }
             eprintln!("Killing stale process on port {port}: pid {pid}");
             let _ = Command::new("taskkill").args(["/F", "/PID", pid]).status();
             killed_any = true;
@@ -211,8 +258,23 @@ fn kill_stale_backend_on_port(port: u16) {
     }
 }
 
-fn spawn_backend(app: &tauri::AppHandle) -> Child {
+/// Keeps the last few backend logs (backend.log, .1, .2, .3) so the log from
+/// a crash survives the next launch instead of being overwritten.
+fn rotate_logs(dir: &std::path::Path) {
+    for i in (1..=2).rev() {
+        let _ = std::fs::rename(dir.join(format!("backend.log.{i}")), dir.join(format!("backend.log.{}", i + 1)));
+    }
+    let _ = std::fs::rename(dir.join("backend.log"), dir.join("backend.log.1"));
+}
+
+fn spawn_backend(app: &tauri::AppHandle) -> Result<Child, String> {
     kill_stale_backend_on_port(BACKEND_PORT);
+    if TcpStream::connect(format!("127.0.0.1:{BACKEND_PORT}")).is_ok() {
+        return Err(format!(
+            "Port {BACKEND_PORT} is already in use by another application, so the Dagster Designer \
+             backend can't start. Quit whatever is using it and relaunch."
+        ));
+    }
     let dir = backend_dir(app);
     let uv = uv_path(app);
 
@@ -230,9 +292,11 @@ fn spawn_backend(app: &tauri::AppHandle) -> Child {
         .path()
         .app_data_dir()
         .expect("could not resolve app data dir");
-    std::fs::create_dir_all(&app_data_dir).expect("could not create app data dir");
+    std::fs::create_dir_all(&app_data_dir)
+        .map_err(|e| format!("could not create app data dir {app_data_dir:?}: {e}"))?;
     let projects_dir = resolve_projects_dir(app);
-    std::fs::create_dir_all(&projects_dir).expect("could not create projects dir");
+    std::fs::create_dir_all(&projects_dir)
+        .map_err(|e| format!("could not create projects dir {projects_dir:?}: {e}"))?;
 
     // stdout/stderr MUST go somewhere that never blocks. `Stdio::piped()`
     // gives the child an OS pipe with a small (~64KB on macOS) kernel
@@ -242,12 +306,13 @@ fn spawn_backend(app: &tauri::AppHandle) -> Child {
     // freezing the entire single-process backend, silently hanging every
     // subsequent HTTP request with no error anywhere. A log file has no
     // such limit, so redirect to one instead.
+    rotate_logs(&app_data_dir);
     let log_path = app_data_dir.join("backend.log");
     let stdout_log = std::fs::File::create(&log_path)
-        .unwrap_or_else(|e| panic!("could not create backend log at {log_path:?}: {e}"));
+        .map_err(|e| format!("could not create backend log at {log_path:?}: {e}"))?;
     let stderr_log = stdout_log
         .try_clone()
-        .expect("could not clone backend log handle");
+        .map_err(|e| format!("could not clone backend log handle: {e}"))?;
 
     Command::new(&uv)
         .args([
@@ -275,13 +340,68 @@ fn spawn_backend(app: &tauri::AppHandle) -> Child {
         .stdout(Stdio::from(stdout_log))
         .stderr(Stdio::from(stderr_log))
         .spawn()
-        .unwrap_or_else(|e| {
-            panic!(
+        .map_err(|e| {
+            format!(
                 "failed to start the Dagster Designer backend via `{:?} run` in {:?}: {e}\n\
                  In a dev build, make sure `uv` is installed and on PATH (https://docs.astral.sh/uv/).",
                 uv, dir
             )
         })
+}
+
+/// Restarts the backend if it dies mid-session. Gives up (with a dialog
+/// pointing at the log) after 3 crashes within a minute, so a backend that
+/// can never start doesn't loop forever.
+fn watch_backend(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut crashes: Vec<Instant> = Vec::new();
+        loop {
+            std::thread::sleep(Duration::from_secs(3));
+            if QUITTING.load(Ordering::SeqCst) {
+                return;
+            }
+            let died = {
+                let state: State<BackendProcess> = app.state();
+                let mut guard = state.0.lock().unwrap();
+                match guard.as_mut().map(|c| c.try_wait()) {
+                    Some(Ok(Some(status))) => {
+                        eprintln!("backend exited unexpectedly: {status}");
+                        guard.take();
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if !died {
+                continue;
+            }
+            crashes.retain(|t| t.elapsed() < Duration::from_secs(60));
+            crashes.push(Instant::now());
+            if crashes.len() > 3 {
+                let _ = app.emit("backend-crashed", ());
+                show_error(
+                    &app,
+                    "Dagster Designer backend stopped",
+                    "The backend keeps crashing. Use Help ▸ Reveal Logs to see backend.log, then relaunch.".into(),
+                    false,
+                );
+                return;
+            }
+            let _ = app.emit("backend-restarting", ());
+            match spawn_backend(&app) {
+                Ok(child) => {
+                    let state: State<BackendProcess> = app.state();
+                    *state.0.lock().unwrap() = Some(child);
+                    wait_for_backend(BACKEND_PORT);
+                    let _ = app.emit("backend-ready", ());
+                }
+                Err(e) => {
+                    show_error(&app, "Dagster Designer backend stopped", e, false);
+                    return;
+                }
+            }
+        }
+    });
 }
 
 /// Blocks (briefly, off the main thread via setup being sync-but-early) until
@@ -371,8 +491,12 @@ fn build_menu(
         .accelerator("CmdOrCtrl+,")
         .build(app)?;
 
+    let check_updates = MenuItemBuilder::with_id("native:update", "Check for Updates…").build(app)?;
+    let reveal_logs_item = MenuItemBuilder::with_id("native:logs", "Reveal Logs in Finder").build(app)?;
+
     let app_menu = SubmenuBuilder::new(app, "Dagster Designer")
         .item(&PredefinedMenuItem::about(app, None, None)?)
+        .item(&check_updates)
         .separator()
         .item(&settings)
         .separator()
@@ -496,6 +620,10 @@ fn build_menu(
         .item(&PredefinedMenuItem::close_window(app, None)?)
         .build()?;
 
+    let help_menu = SubmenuBuilder::new(app, "Help")
+        .item(&reveal_logs_item)
+        .build()?;
+
     let mut builder = MenuBuilder::new(app)
         .item(&app_menu)
         .item(&edit_menu)
@@ -523,7 +651,7 @@ fn build_menu(
         }
     }
 
-    builder.item(&window_menu).build()
+    builder.item(&window_menu).item(&help_menu).build()
 }
 
 /// Asks the frontend whether it's OK to quit, instead of exiting outright.
@@ -540,6 +668,7 @@ fn request_quit(app: &AppHandle) {
 /// unsaved edits.
 #[tauri::command]
 fn confirm_quit(app: AppHandle) {
+    QUITTING.store(true, Ordering::SeqCst);
     kill_backend(&app);
     app.exit(0);
 }
@@ -588,11 +717,75 @@ fn set_projects_dir(app: AppHandle, path: String) -> Result<(), String> {
     save_preferences(&app, &Preferences { projects_dir: Some(new_dir) })?;
 
     kill_backend(&app);
-    let child = spawn_backend(&app);
+    let child = spawn_backend(&app)?;
     let state: State<BackendProcess> = app.state();
     *state.0.lock().unwrap() = Some(child);
     wait_for_backend(BACKEND_PORT);
     Ok(())
+}
+
+/// Opens the folder holding backend.log in Finder / Explorer.
+#[tauri::command]
+fn reveal_logs(app: AppHandle) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let log = dir.join("backend.log");
+    let target = if log.exists() { log } else { dir };
+    tauri_plugin_opener::reveal_item_in_dir(target).map_err(|e| e.to_string())
+}
+
+/// Checks GitHub releases for a newer build and, if there is one, asks
+/// before doing anything. `interactive` (menu click) also reports "up to
+/// date" / errors; the silent startup check stays quiet unless an update
+/// exists.
+async fn run_update_check(app: AppHandle, interactive: bool) {
+    let tell = |title: &str, msg: String, kind: MessageDialogKind| {
+        if interactive {
+            app.dialog().message(msg).title(title).kind(kind).blocking_show();
+        }
+    };
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => return tell("Update check failed", e.to_string(), MessageDialogKind::Error),
+    };
+    let update = match updater.check().await {
+        Ok(Some(u)) => u,
+        Ok(None) => return tell("Dagster Designer", "You're on the latest version.".into(), MessageDialogKind::Info),
+        Err(e) => return tell("Update check failed", e.to_string(), MessageDialogKind::Error),
+    };
+    let notes = update.body.clone().unwrap_or_default();
+    let accepted = app
+        .dialog()
+        .message(format!(
+            "Version {} is available (you have {}).\n\n{}",
+            update.version, update.current_version, notes
+        ))
+        .title("Update available")
+        .buttons(MessageDialogButtons::OkCancelCustom("Update & Restart".into(), "Later".into()))
+        .blocking_show();
+    if !accepted {
+        return;
+    }
+    let bytes = match update.download(|_, _| {}, || {}).await {
+        Ok(b) => b,
+        Err(e) => return show_error(&app, "Update failed", e.to_string(), false),
+    };
+    QUITTING.store(true, Ordering::SeqCst);
+    kill_backend(&app);
+    if let Err(e) = update.install(bytes) {
+        QUITTING.store(false, Ordering::SeqCst);
+        watch_backend(app.clone());
+        if let Ok(child) = spawn_backend(&app) {
+            let state: State<BackendProcess> = app.state();
+            *state.0.lock().unwrap() = Some(child);
+        }
+        return show_error(&app, "Update failed", e.to_string(), false);
+    }
+    app.restart();
+}
+
+#[tauri::command]
+fn check_for_updates(app: AppHandle) {
+    tauri::async_runtime::spawn(run_update_check(app, true));
 }
 
 fn main() {
@@ -614,9 +807,14 @@ fn main() {
         .manage(BackendProcess(Mutex::new(None)))
         .setup(|app| {
             let handle = app.handle().clone();
-            let child = spawn_backend(&handle);
-            let state: State<BackendProcess> = app.state();
-            *state.0.lock().unwrap() = Some(child);
+            match spawn_backend(&handle) {
+                Ok(child) => {
+                    let state: State<BackendProcess> = app.state();
+                    *state.0.lock().unwrap() = Some(child);
+                    watch_backend(handle.clone());
+                }
+                Err(e) => show_error(&handle, "Dagster Designer can't start", e, true),
+            }
 
             // wait_for_backend polls for up to 5 minutes (uv sync + uvicorn
             // boot on a cold cache can genuinely take that long) -- calling
@@ -636,6 +834,11 @@ fn main() {
             std::thread::spawn(move || {
                 wait_for_backend(BACKEND_PORT);
                 let _ = ready_handle.emit("backend-ready", ());
+                // Quiet check once the app is up; only speaks if there's
+                // an update, and the user can always pick "Later".
+                if !cfg!(debug_assertions) {
+                    tauri::async_runtime::block_on(run_update_check(ready_handle, false));
+                }
             });
 
             // macOS-only menu bar -- see set_page_menu for why (every item
@@ -704,7 +907,11 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
+            reveal_logs,
+            check_for_updates,
             set_page_menu,
             get_projects_dir,
             set_projects_dir,
@@ -714,6 +921,14 @@ fn main() {
             let id = event.id().as_ref();
             if id == "quit" {
                 request_quit(app);
+                return;
+            }
+            if id == "native:update" {
+                check_for_updates(app.clone());
+                return;
+            }
+            if id == "native:logs" {
+                let _ = reveal_logs(app.clone());
                 return;
             }
             if id.starts_with("project:")

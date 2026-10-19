@@ -69,7 +69,7 @@ jobs:
         shell: bash
         run: |
           VERSION="0.1.${{ github.run_number }}"
-          node -e "const fs=require('fs');const p='dagster_designer/src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version='$VERSION';fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n')"
+          node -e "const fs=require('fs');const p='dagster_designer/src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version='$VERSION';c.bundle.createUpdaterArtifacts=true;fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n')"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
@@ -90,8 +90,13 @@ jobs:
       # Real uv binaries this time (unlike ci.yml's empty placeholders) --
       # fetch-uv.mjs dispatches to fetch-uv.sh (macOS, universal2 via lipo)
       # or its own Windows zip-extract path.
+      # TAURI_SIGNING_PRIVATE_KEY signs the in-app update packages (the matching
+      # public key is in tauri.conf.json's plugins.updater.pubkey).
       - name: Build installer
         working-directory: dagster_designer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run app:build
 
       - name: Locate built installer(s)
@@ -102,8 +107,13 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/out"
           if [ "${{ runner.os }}" = "macOS" ]; then
             cp dmg/*.dmg "$GITHUB_WORKSPACE/out/"
+            # Update package + signature, under fixed names the manifest job relies on.
+            cp macos/*.app.tar.gz "$GITHUB_WORKSPACE/out/Dagster-Designer-darwin-aarch64.app.tar.gz"
+            cp macos/*.app.tar.gz.sig "$GITHUB_WORKSPACE/out/Dagster-Designer-darwin-aarch64.app.tar.gz.sig"
           else
             find msi nsis -type f \( -name "*.msi" -o -name "*.exe" \) -exec cp {} "$GITHUB_WORKSPACE/out/" \;
+            cp nsis/*-setup.exe "$GITHUB_WORKSPACE/out/Dagster-Designer-windows-x86_64-setup.exe"
+            cp nsis/*-setup.exe.sig "$GITHUB_WORKSPACE/out/Dagster-Designer-windows-x86_64-setup.exe.sig"
           fi
           ls -la "$GITHUB_WORKSPACE/out"
 
@@ -125,3 +135,33 @@ jobs:
           body_path: release-notes/notes.md
           make_latest: false
           files: out/*
+
+  # The updater polls releases/latest/download/latest.json: one manifest naming
+  # this build's version and each platform's signed update package.
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Build and upload latest.json
+        run: |
+          VERSION="0.1.${{ github.run_number }}"
+          REPO="${{ github.repository }}"
+          BASE="https://github.com/$REPO/releases/download/v$VERSION"
+          gh release download "v$VERSION" --repo "$REPO" --pattern 'Dagster-Designer-*.sig' --dir sigs
+          NOTES=$(gh release view "v$VERSION" --repo "$REPO" --json body -q .body | grep '^- ' | head -20 || true)
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "$NOTES" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg mac_sig "$(cat sigs/Dagster-Designer-darwin-aarch64.app.tar.gz.sig)" \
+            --arg mac_url "$BASE/Dagster-Designer-darwin-aarch64.app.tar.gz" \
+            --arg win_sig "$(cat sigs/Dagster-Designer-windows-x86_64-setup.exe.sig)" \
+            --arg win_url "$BASE/Dagster-Designer-windows-x86_64-setup.exe" \
+            '{version: $version, notes: $notes, pub_date: $date, platforms: {
+               "darwin-aarch64": {signature: $mac_sig, url: $mac_url},
+               "windows-x86_64": {signature: $win_sig, url: $win_url}}}' > latest.json
+          cat latest.json
+          gh release upload latest latest.json --repo "$REPO" --clobber
+          gh release upload "v$VERSION" latest.json --repo "$REPO" --clobber

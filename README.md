@@ -27,3 +27,11 @@ npm run app:dev
 ## Why a separate repo
 
 `dagster_designer` is the actual product (web app usable on its own); this wrapper is optional desktop packaging for it. Keeping it separate means the wrapper's Rust/Tauri concerns (build targets, code signing, bundle config) don't clutter the app repo's history, and the app repo stays deployable as a plain web app without any of this.
+
+## Updates
+
+Release builds check GitHub releases on launch (and via **Dagster Designer ▸ Check for Updates…**) and ask before installing anything. Update packages are signed; the public key is in `tauri.conf.json` (`plugins.updater.pubkey`) and the private key is the `TAURI_SIGNING_PRIVATE_KEY` repo secret (a copy lives outside the repo at `~/.tauri/dagster-designer.key` on the maintainer's machine -- losing it means existing installs can't be updated). `release.yml` publishes `latest.json` alongside each build.
+
+## Logs
+
+The backend writes `backend.log` (plus the last three runs as `.1`–`.3`) to the app-data folder; **Help ▸ Reveal Logs in Finder** opens it.

@@ -28,6 +28,14 @@
     },
     "macOSPrivateApi": true
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQzMjcyMzU2NUUxRTEwN0IKUldSN0VCNWVWaU1uUXdxN1lSeGF3aXlVWjRJeDN6U0dGWkh1eVNDRDYzZUd2UFBVZVZ5MzBWemgK",
+      "endpoints": [
+        "https://github.com/eric-thomas-dagster/dagster-designer-desktop/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
