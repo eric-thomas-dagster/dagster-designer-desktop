@@ -174,3 +174,22 @@ jobs:
           cat latest.json
           gh release upload latest latest.json --repo "$REPO" --clobber
           gh release upload "v$VERSION" latest.json --repo "$REPO" --clobber
+
+  # `latest` is one rolling release, and each build only adds its files -- so old versions piled up on it.
+  # Keep just this build's installers there (every older build stays downloadable from its own vX.Y.Z release).
+  prune-latest:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Delete previous versions' files from the latest release
+        run: |
+          VERSION="0.1.${{ github.run_number }}"
+          REPO="${{ github.repository }}"
+          gh release view latest --repo "$REPO" --json assets -q '.assets[].name' | while read -r name; do
+            case "$name" in
+              *"_${VERSION}_"*|latest.json|Dagster-Designer-*) ;;
+              *) echo "removing $name"; gh release delete-asset latest "$name" --repo "$REPO" --yes ;;
+            esac
+          done
