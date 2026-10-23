@@ -1,0 +1,29 @@
+name: Auto release
+
+# The release workflow builds dagster_designer's main branch, but only runs on pushes to THIS repo. Often a change is only in
+# dagster_designer (the web app), so this checks every 15 minutes and starts a release when it has commits no release was
+# built from. The decision logic and its tests are in scripts/auto-release.sh and scripts/test-auto-release.sh.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Release if dagster_designer has commits no release includes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          THIS_REPO: ${{ github.repository }}
+          MAIN_REPO: eric-thomas-dagster/dagster_designer
+        run: ./scripts/auto-release.sh

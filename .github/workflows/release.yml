@@ -15,6 +15,12 @@ on:
 permissions:
   contents: write
 
+# One release at a time: two runs would race on the same tags and the rolling "latest" release. A run that starts while
+# another is going waits its turn.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   # What changed since the previous release: the commit subjects in dagster_designer between the commit the
   # last release recorded ("Built from dagster_designer@<sha>" in its notes) and the one being built now.

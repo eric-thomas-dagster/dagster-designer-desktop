@@ -7,6 +7,12 @@ on:
     branches: [main]
 
 jobs:
+  auto-release-logic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/test-auto-release.sh
+
   cargo-check:
     strategy:
       fail-fast: false
