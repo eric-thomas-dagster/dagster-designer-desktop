@@ -28,6 +28,12 @@ npm run app:dev
 
 `dagster_designer` is the actual product (web app usable on its own); this wrapper is optional desktop packaging for it. Keeping it separate means the wrapper's Rust/Tauri concerns (build targets, code signing, bundle config) don't clutter the app repo's history, and the app repo stays deployable as a plain web app without any of this.
 
+## Linux
+
+Releases include a `.AppImage` and a `.deb` (x86_64) alongside the macOS and Windows installers. To build one yourself you need Tauri's usual Linux prerequisites (WebKitGTK 4.1 and a few desktop libraries; see tauri.app/start/prerequisites), then the same `npm run app:build` as everywhere else: `scripts/fetch-uv.mjs` fetches the Linux `uv`, and `tauri.linux.conf.json` sets the bundle formats and a normal (decorated, opaque) window. The AppImage is also the in-app update package on Linux.
+
+To try a change to the build without publishing anything, run the Release workflow from your branch with "Publish" unchecked: it builds every platform and keeps the installers as run artifacts.
+
 ## Updates
 
 Release builds check GitHub releases on launch (and via **Dagster Designer ▸ Check for Updates…**) and ask before installing anything. Update packages are signed; the public key is in `tauri.conf.json` (`plugins.updater.pubkey`) and the private key is the `TAURI_SIGNING_PRIVATE_KEY` repo secret (a copy lives outside the repo at `~/.tauri/dagster-designer.key` on the maintainer's machine -- losing it means existing installs can't be updated). `release.yml` publishes `latest.json` alongside each build.

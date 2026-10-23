@@ -3,7 +3,14 @@ name: Release
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      # false = build every platform and keep the installers as run artifacts, but publish nothing: no release, no
+      # update feed. For trying a change to the build itself without touching what people download or auto-update to.
+      publish:
+        description: Publish the build (release + update feed)
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -44,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-latest, windows-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     steps:
       # Same sibling-repo layout as ci.yml, but this time frontend/ is
@@ -77,6 +84,12 @@ jobs:
         with:
           name: release-notes
           path: release-notes
+      # Tauri's Linux build needs WebKitGTK and a few desktop libraries (see tauri.app prerequisites).
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libgtk-3-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -114,6 +127,14 @@ jobs:
             cp macos/*.app.tar.gz "$GITHUB_WORKSPACE/out/Dagster-Designer-darwin-aarch64.app.tar.gz"
             cp macos/*.app.tar.gz.sig "$GITHUB_WORKSPACE/out/Dagster-Designer-darwin-aarch64.app.tar.gz.sig"
             fi
+          elif [ "${{ runner.os }}" = "Linux" ]; then
+            cp deb/*.deb "$GITHUB_WORKSPACE/out/"
+            cp appimage/*.AppImage "$GITHUB_WORKSPACE/out/"
+            if ls appimage/*.AppImage.sig >/dev/null 2>&1; then
+              # On Linux the AppImage itself is the update package; its signature sits beside it.
+              cp appimage/*.AppImage "$GITHUB_WORKSPACE/out/Dagster-Designer-linux-x86_64.AppImage"
+              cp appimage/*.AppImage.sig "$GITHUB_WORKSPACE/out/Dagster-Designer-linux-x86_64.AppImage.sig"
+            fi
           else
             find msi nsis -type f \( -name "*.msi" -o -name "*.exe" \) -exec cp {} "$GITHUB_WORKSPACE/out/" \;
             if ls nsis/*-setup.exe.sig >/dev/null 2>&1; then
@@ -123,7 +144,15 @@ jobs:
           fi
           ls -la "$GITHUB_WORKSPACE/out"
 
+      - name: Keep the installers as a run artifact (not publishing)
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.publish }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ runner.os }}
+          path: out/*
+
       - name: Publish to the rolling "latest" release
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
@@ -134,6 +163,7 @@ jobs:
 
       # An immutable, versioned copy with the same notes, so an older build stays downloadable.
       - name: Publish the versioned release
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION }}
@@ -146,6 +176,7 @@ jobs:
   # this build's version and each platform's signed update package.
   manifest:
     needs: build
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -171,6 +202,12 @@ jobs:
             '{version: $version, notes: $notes, pub_date: $date, platforms: {
                "darwin-aarch64": {signature: $mac_sig, url: $mac_url},
                "windows-x86_64": {signature: $win_sig, url: $win_url}}}' > latest.json
+          # Linux joins the feed when its package was signed (the AppImage is the update package there).
+          if [ -f sigs/Dagster-Designer-linux-x86_64.AppImage.sig ]; then
+            jq --arg sig "$(cat sigs/Dagster-Designer-linux-x86_64.AppImage.sig)" \
+               --arg url "$BASE/Dagster-Designer-linux-x86_64.AppImage" \
+               '.platforms["linux-x86_64"] = {signature: $sig, url: $url}' latest.json > latest.tmp && mv latest.tmp latest.json
+          fi
           cat latest.json
           gh release upload latest latest.json --repo "$REPO" --clobber
           gh release upload "v$VERSION" latest.json --repo "$REPO" --clobber
@@ -179,6 +216,7 @@ jobs:
   # Keep just this build's installers there (every older build stays downloadable from its own vX.Y.Z release).
   prune-latest:
     needs: build
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
