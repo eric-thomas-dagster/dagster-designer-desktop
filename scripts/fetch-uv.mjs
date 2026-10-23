@@ -14,9 +14,11 @@
 // Windows: fetches the single x86_64-pc-windows-msvc build directly (no
 // universal binary concept there) and unzips it with this script's own
 // logic.
+// Linux: fetches the build for this machine's architecture (x86_64 or
+// aarch64, gnu libc) and extracts the tarball.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, copyFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, copyFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -71,6 +73,30 @@ async function fetchWindows() {
   }
 }
 
+async function fetchLinux() {
+  if (alreadyFetched(['uv', 'uvx'])) {
+    console.log('vendor/uv/{uv,uvx} already present, skipping (set FORCE=1 to refetch)');
+    return;
+  }
+  const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
+  const target = `${arch}-unknown-linux-gnu`;
+  const workDir = mkdtempSync(join(tmpdir(), 'fetch-uv-'));
+  try {
+    const tarPath = join(workDir, 'uv.tar.gz');
+    await download(releaseUrl(`uv-${target}.tar.gz`), tarPath);
+    execFileSync('tar', ['-xzf', tarPath, '-C', workDir]);
+    mkdirSync(vendorDir, { recursive: true });
+    // Unix tarballs extract into a uv-<target>/ folder.
+    for (const name of ['uv', 'uvx']) {
+      copyFileSync(join(workDir, `uv-${target}`, name), join(vendorDir, name));
+      chmodSync(join(vendorDir, name), 0o755);
+    }
+    console.log(`Done: ${join(vendorDir, 'uv')}, ${join(vendorDir, 'uvx')}`);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
 function fetchMac() {
   if (alreadyFetched(['uv', 'uvx'])) {
     console.log('vendor/uv/{uv,uvx} already present, skipping (set FORCE=1 to refetch)');
@@ -86,6 +112,8 @@ if (process.platform === 'win32') {
   await fetchWindows();
 } else if (process.platform === 'darwin') {
   fetchMac();
+} else if (process.platform === 'linux') {
+  await fetchLinux();
 } else {
-  throw new Error(`fetch-uv.mjs: unsupported platform ${process.platform} (only darwin and win32 are set up so far)`);
+  throw new Error(`fetch-uv.mjs: unsupported platform ${process.platform} (darwin, win32 and linux are set up)`);
 }
