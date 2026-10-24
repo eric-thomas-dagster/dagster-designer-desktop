@@ -12,6 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: ./scripts/test-auto-release.sh
+      - run: ./scripts/test-launch-test.sh
 
   cargo-check:
     strategy:
