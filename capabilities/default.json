@@ -1,7 +1,9 @@
 {
   "identifier": "default",
   "description": "Capabilities for the main window",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
@@ -14,6 +16,7 @@
     "opener:default",
     "os:default",
     "window-state:default",
-    "updater:default"
+    "updater:default",
+    "deep-link:default"
   ]
 }
