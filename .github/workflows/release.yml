@@ -208,11 +208,9 @@ jobs:
           dpkg-deb -x target/release/bundle/deb/*.deb "$dir"
           ./scripts/launch-test.sh "$dir/usr/lib/Dagster Designer"
 
-      # Windows: unpack the MSI without installing it, then run the same check. Reports but doesn't block yet: the Windows bundle
-      # layout hasn't been proven on a real run, and a mistake in the check itself shouldn't stop a good release.
+      # Windows: unpack the MSI without installing it, then run the same check.
       - name: Launch test (Windows)
         if: runner.os == 'Windows'
-        continue-on-error: true
         shell: bash
         working-directory: dagster_designer/src-tauri
         run: |
