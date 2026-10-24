@@ -8,6 +8,7 @@
 set -uo pipefail
 
 RES="${1:?usage: launch-test.sh <resource dir>}"
+RES="$(cd "$RES" 2>/dev/null && pwd)" || { echo "LAUNCH TEST FAILED: no such resource dir: $1" >&2; exit 1; }   # absolute: the script changes directory
 PORT="${PORT:-18765}"
 TIMEOUT="${TIMEOUT:-900}"
 UV="$RES/bin/uv"

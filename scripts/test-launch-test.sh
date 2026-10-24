@@ -50,6 +50,9 @@ check() {  # name, expected exit (0|1), expected text in the output, then the co
 
 export PORT=18799
 check "a healthy bundle passes"                         0 "LAUNCH TEST PASSED"          env TIMEOUT=30 ./launch-test.sh "$(make_bundle good serve)"
+rel_bundle=$(make_bundle rel serve)
+check "a RELATIVE resource path works (CI passes one)"   0 "LAUNCH TEST PASSED"          env TIMEOUT=30 bash -c "cd '$work' && '$PWD/launch-test.sh' rel"
+check "a missing resource dir is reported"               1 "no such resource dir"        env TIMEOUT=5 ./launch-test.sh "$work/nope"
 check "a backend that crashes at start is reported"     1 "exited before it came up"   env TIMEOUT=30 ./launch-test.sh "$(make_bundle crash crash)"
 check "the crash reason is shown from the log"          1 "No module named 'fastapi'"   env TIMEOUT=30 ./launch-test.sh "$(make_bundle crash2 crash)"
 check "a backend that never answers times out"          1 "no answer from /health"      env TIMEOUT=4 ./launch-test.sh "$(make_bundle quiet silent)"
