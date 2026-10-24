@@ -855,6 +855,28 @@ fn main() {
         .manage(BackendProcess(Mutex::new(None)))
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // `dagster-designer://` links. The installers register the scheme on macOS and (MSI/NSIS) Windows; an AppImage on
+            // Linux, and a dev build on Windows, have no installer, so they register it at runtime.
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(e) = app.deep_link().register_all() {
+                    eprintln!("deep link registration failed: {e}");
+                }
+            }
+            {
+                // A link should bring the app forward, not just change what it shows behind other windows.
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let h = handle.clone();
+                app.deep_link().on_open_url(move |_| {
+                    if let Some(window) = h.get_webview_window("main") {
+                        let _ = window.unminimize();
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                });
+            }
             match spawn_backend(&handle) {
                 Ok(child) => {
                     let state: State<BackendProcess> = app.state();
@@ -951,6 +973,7 @@ fn main() {
 
             Ok(())
         })
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
