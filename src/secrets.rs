@@ -3,8 +3,10 @@
 //! The webview can store and delete a key but never read one back. The backend gets its keys from the environment the
 //! shell starts it with, so a key is only ever in memory in this process and the backend.
 
-use std::collections::HashMap;
 use std::path::Path;
+#[cfg(test)]
+use std::collections::HashMap;
+#[cfg(test)]
 use std::sync::Mutex;
 
 const SERVICE: &str = "com.dagsterlabs.designer";
@@ -139,9 +141,11 @@ pub fn migrate_env_file(path: &Path, store: &dyn SecretStore) -> Vec<String> {
 }
 
 /// In-memory store for tests.
+#[cfg(test)]
 #[derive(Default)]
 pub struct MemoryStore(Mutex<HashMap<String, String>>);
 
+#[cfg(test)]
 impl SecretStore for MemoryStore {
     fn get(&self, name: &str) -> Result<Option<String>, String> {
         Ok(self.0.lock().unwrap().get(name).cloned())

@@ -1,6 +1,7 @@
 // Prevents an extra console window from popping up on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod editor;
 mod secrets;
 
 use secrets::SecretStore;
@@ -738,6 +739,12 @@ fn secret_delete(name: String) -> Result<(), String> {
     secrets::KeychainStore.delete(&name)
 }
 
+/// Open a project folder in VS Code or Cursor ("code" / "cursor").
+#[tauri::command]
+fn open_in_editor(editor: String, path: String) -> Result<(), String> {
+    editor::open_in_editor(&editor, &path)
+}
+
 /// Current projects folder, for the Settings dialog to display.
 #[tauri::command]
 fn get_projects_dir(app: AppHandle) -> String {
@@ -959,7 +966,8 @@ fn main() {
             confirm_quit,
             secrets_available,
             secret_set,
-            secret_delete
+            secret_delete,
+            open_in_editor
         ])
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
