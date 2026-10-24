@@ -1,6 +1,9 @@
 // Prevents an extra console window from popping up on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod secrets;
+
+use secrets::SecretStore;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -314,7 +317,17 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<Child, String> {
         .try_clone()
         .map_err(|e| format!("could not clone backend log handle: {e}"))?;
 
-    Command::new(&uv)
+    // API keys live in the OS keychain: move any that an older version left in the plain-text .env, then hand the backend its
+    // keys through its environment (it loads .env without overriding, so these win). If the keychain isn't usable here the
+    // keys simply stay in .env, as before.
+    let keychain = secrets::KeychainStore;
+    let moved = secrets::migrate_env_file(&app_data_dir.join("data").join(".env"), &keychain);
+    if !moved.is_empty() {
+        eprintln!("Moved {} API key(s) from the .env file into the keychain: {}", moved.len(), moved.join(", "));
+    }
+
+    let mut backend = Command::new(&uv);
+    backend
         .args([
             "run",
             "uvicorn",
@@ -336,7 +349,11 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<Child, String> {
         // this process, closing the whole class of bug instead of hunting
         // down each open() call individually. No-op on macOS/Linux, which
         // are already UTF-8.
-        .env("PYTHONUTF8", "1")
+        .env("PYTHONUTF8", "1");
+    for (name, value) in secrets::env_for_backend(&keychain) {
+        backend.env(name, value);
+    }
+    backend
         .stdout(Stdio::from(stdout_log))
         .stderr(Stdio::from(stderr_log))
         .spawn()
@@ -697,6 +714,30 @@ fn set_page_menu(app: AppHandle, title: Option<String>, actions: Vec<PageAction>
     }
 }
 
+/// Whether the OS keychain works on this machine (it may not, e.g. a Linux desktop without a secret service).
+#[tauri::command]
+fn secrets_available() -> bool {
+    secrets::keychain_works(&secrets::KeychainStore)
+}
+
+/// Store an API key in the keychain. The webview can write and delete keys but never read one back, and only the names on
+/// the allowlist are accepted.
+#[tauri::command]
+fn secret_set(name: String, value: String) -> Result<(), String> {
+    if !secrets::is_secret_name(&name) {
+        return Err(format!("{name} is not a secret Dagster Designer stores"));
+    }
+    secrets::KeychainStore.set_checked(&name, &value)
+}
+
+#[tauri::command]
+fn secret_delete(name: String) -> Result<(), String> {
+    if !secrets::is_secret_name(&name) {
+        return Err(format!("{name} is not a secret Dagster Designer stores"));
+    }
+    secrets::KeychainStore.delete(&name)
+}
+
 /// Current projects folder, for the Settings dialog to display.
 #[tauri::command]
 fn get_projects_dir(app: AppHandle) -> String {
@@ -915,7 +956,10 @@ fn main() {
             set_page_menu,
             get_projects_dir,
             set_projects_dir,
-            confirm_quit
+            confirm_quit,
+            secrets_available,
+            secret_set,
+            secret_delete
         ])
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
