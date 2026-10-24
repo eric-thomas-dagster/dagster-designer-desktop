@@ -65,3 +65,8 @@ jobs:
       - name: cargo check
         working-directory: dagster_designer/src-tauri
         run: cargo check --all-targets
+      # The tests don't depend on the platform (they check each platform's behavior as data), so one platform runs them.
+      - name: cargo test
+        if: runner.os == 'Linux'
+        working-directory: dagster_designer/src-tauri
+        run: cargo test --bin dagster-designer
