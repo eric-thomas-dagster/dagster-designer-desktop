@@ -25,6 +25,9 @@ serde_json = "1"
 # that's exactly why the Windows build failed to link it at all despite
 # main.rs's own #[cfg(target_os = "windows")] call to it.
 window-vibrancy = "0.6"
+# API keys in the OS keychain (macOS Keychain, Windows Credential Manager, the Linux secret service). `vendored` builds the
+# Linux D-Bus client in so no system libdbus is needed.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "vendored"] }
 
 [profile.release]
 panic = "abort"
@@ -32,3 +35,6 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+[dev-dependencies]
+tempfile = "3"
