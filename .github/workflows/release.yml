@@ -87,7 +87,9 @@ jobs:
         run: cargo test --bin dagster-designer
       - name: Release script tests
         working-directory: dagster_designer/src-tauri
-        run: ./scripts/test-auto-release.sh
+        run: |
+          ./scripts/test-auto-release.sh
+          ./scripts/test-launch-test.sh
 
   # What changed since the previous release: the commit subjects in dagster_designer between the commit the
   # last release recorded ("Built from dagster_designer@<sha>" in its notes) and the one being built now.
@@ -189,6 +191,36 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run app:build
+
+      # Start the backend from the app that was just built, exactly as the app does, and check it answers -- before anything is
+      # published. Catches a file missing from the bundle, a uv that won't run, a dependency that won't install on this OS.
+      - name: Launch test (macOS)
+        if: runner.os == 'macOS'
+        working-directory: dagster_designer/src-tauri
+        run: ./scripts/launch-test.sh "target/release/bundle/macos/Dagster Designer.app/Contents/Resources"
+
+      - name: Launch test (Linux)
+        if: runner.os == 'Linux'
+        working-directory: dagster_designer/src-tauri
+        run: |
+          dir="$RUNNER_TEMP/deb"
+          mkdir -p "$dir"
+          dpkg-deb -x target/release/bundle/deb/*.deb "$dir"
+          ./scripts/launch-test.sh "$dir/usr/lib/Dagster Designer"
+
+      # Windows: unpack the MSI without installing it, then run the same check.
+      - name: Launch test (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: dagster_designer/src-tauri
+        run: |
+          msi=$(ls target/release/bundle/msi/*.msi | head -1)
+          target="$RUNNER_TEMP/msi"
+          mkdir -p "$target"
+          msiexec //a "$(cygpath -w "$msi")" //qn TARGETDIR="$(cygpath -w "$target")"
+          main=$(find "$target" -path "*backend/app/main.py" | head -1)
+          [ -n "$main" ] || { echo "no backend/app/main.py in the unpacked installer"; find "$target" -maxdepth 3 | head -30; exit 1; }
+          ./scripts/launch-test.sh "$(dirname "$(dirname "$(dirname "$main")")")"
 
       - name: Locate built installer(s)
         id: artifacts
