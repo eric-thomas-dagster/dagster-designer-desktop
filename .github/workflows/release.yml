@@ -157,6 +157,9 @@ jobs:
         run: |
           VERSION="0.1.${{ github.run_number }}"
           node -e "const fs=require('fs');const p='dagster_designer/src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.version='$VERSION';if(process.env.HAS_KEY==='true')c.bundle.createUpdaterArtifacts=true;fs.writeFileSync(p,JSON.stringify(c,null,2)+'\n')"
+          # Cargo.toml too: its version feeds the compiled program, and changing it also forces the app crate to rebuild
+          # instead of reusing a cached build that still has the old version baked in.
+          node -e "const fs=require('fs');const p='dagster_designer/src-tauri/Cargo.toml';const t=fs.readFileSync(p,'utf8');if(!/^version = \".*\"$/m.test(t))throw new Error('no package version line in Cargo.toml');fs.writeFileSync(p,t.replace(/^version = \".*\"$/m,'version = \"$VERSION\"'))"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
@@ -191,6 +194,21 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run app:build
+
+      # Run the built program and ask what version it believes it is. The updater compares THAT with the release feed, so if it
+      # disagrees with the version being released every user is offered the update forever (it once reported 0.1.0).
+      - name: Check the app reports the released version
+        shell: bash
+        working-directory: dagster_designer/src-tauri
+        run: |
+          exe=target/release/dagster-designer
+          [ "$RUNNER_OS" = Windows ] && exe="$exe.exe"
+          out="$RUNNER_TEMP/app-version.txt"
+          rm -f "$out"
+          "$exe" --print-version "$out"
+          got=$(tr -d '\r\n' < "$out")
+          echo "the app reports version '$got'; releasing '$VERSION'"
+          [ "$got" = "$VERSION" ] || { echo "VERSION MISMATCH: the built app reports '$got' but this release is '$VERSION'" >&2; exit 1; }
 
       # Start the backend from the app that was just built, exactly as the app does, and check it answers -- before anything is
       # published. Catches a file missing from the bundle, a uv that won't run, a dependency that won't install on this OS.
