@@ -901,7 +901,26 @@ fn check_for_updates(app: AppHandle) {
     tauri::async_runtime::spawn(run_update_check(app, true));
 }
 
+/// `--print-version [file]`: print (or write to `file`) the version this build reports to the updater, then exit. The release
+/// workflow runs it on the built binary and compares with the version being released, because the bundle's metadata can say one
+/// thing while the program itself says another (that shipped once: the installer was named 0.1.47 and the app believed it was 0.1.0).
+fn print_version_and_exit(version: &str) -> bool {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() != Some("--print-version") {
+        return false;
+    }
+    match args.next() {
+        Some(path) => std::fs::write(path, version).expect("could not write the version file"),
+        None => println!("{version}"),
+    }
+    true
+}
+
 fn main() {
+    let context = tauri::generate_context!();
+    if print_version_and_exit(&context.package_info().version.to_string()) {
+        return;
+    }
     tauri::Builder::default()
         // Must be the first plugin registered. If the app is already
         // running, this fires in that existing instance instead of
@@ -1101,7 +1120,7 @@ fn main() {
                 }
             }
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building the Dagster Designer app")
         .run(|_app, _event| {
             // Clicking the Dock icon while the window is hidden in the tray brings it back.
@@ -1120,5 +1139,16 @@ mod tray_tests {
     fn close_hides_only_in_background_mode() {
         assert_eq!(close_action(true), CloseAction::HideToTray);
         assert_eq!(close_action(false), CloseAction::AskToQuit);
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    /// The app's version comes from tauri.conf.json at runtime and from Cargo.toml in places; if they differ, the updater and the
+    /// About box disagree with the installer's name. The release stamps both, and this keeps them equal in the repo.
+    #[test]
+    fn cargo_and_tauri_conf_versions_agree() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(conf["version"].as_str().unwrap(), env!("CARGO_PKG_VERSION"));
     }
 }
