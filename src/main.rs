@@ -44,6 +44,9 @@ struct BackendProcess(Mutex<Option<Child>>);
 /// Set once the app is deliberately shutting down (quit or update), so the
 /// watchdog doesn't mistake the backend we just killed for a crash.
 static QUITTING: AtomicBool = AtomicBool::new(false);
+/// While true, closing the window hides it to the tray instead of quitting, so the app keeps watching Dagster+ runs.
+static BACKGROUND_MODE: AtomicBool = AtomicBool::new(false);
+const TRAY_ID: &str = "main-tray";
 
 /// Shows a native error dialog off the main thread (blocking dialogs deadlock
 /// there on macOS) and optionally exits afterwards. Used instead of panic!,
@@ -678,7 +681,69 @@ fn build_menu(
 /// warning -- see the `quit-requested` listener in App.tsx, which confirms
 /// with the user when needed and then calls back into `confirm_quit`.
 fn request_quit(app: &AppHandle) {
+    // The confirm dialog lives in the window, so a window hidden in the tray has to come back first.
+    show_main_window(app);
     let _ = app.emit("quit-requested", ());
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// What the window's close button does: hide to the tray while background mode is on, otherwise start the normal quit flow.
+#[derive(Debug, PartialEq)]
+enum CloseAction {
+    HideToTray,
+    AskToQuit,
+}
+
+fn close_action(background_mode: bool) -> CloseAction {
+    if background_mode { CloseAction::HideToTray } else { CloseAction::AskToQuit }
+}
+
+/// Turns the tray icon (and with it close-to-tray) on or off. The frontend decides when: it is for people watching Dagster+
+/// runs. Open-source projects only run while the window is open, so there is nothing to keep alive for them.
+#[tauri::command]
+fn set_background_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
+    BACKGROUND_MODE.store(enabled, Ordering::SeqCst);
+    if !enabled {
+        app.remove_tray_by_id(TRAY_ID);
+        return Ok(());
+    }
+    if app.tray_by_id(TRAY_ID).is_some() {
+        return Ok(());
+    }
+    let open = MenuItemBuilder::with_id("tray-open", "Open Dagster Designer").build(&app).map_err(|e| e.to_string())?;
+    let quit = MenuItemBuilder::with_id("tray-quit", "Quit").build(&app).map_err(|e| e.to_string())?;
+    let menu = MenuBuilder::new(&app).item(&open).separator().item(&quit).build().map_err(|e| e.to_string())?;
+    let mut builder = tauri::tray::TrayIconBuilder::with_id(TRAY_ID)
+        .tooltip("Dagster Designer: watching your Dagster+ runs")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "tray-open" => show_main_window(app),
+            "tray-quit" => request_quit(app),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let tauri::tray::TrayIconEvent::Click {
+                button: tauri::tray::MouseButton::Left,
+                button_state: tauri::tray::MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(&app).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// The frontend's go-ahead to actually quit (see `request_quit`), invoked
@@ -990,7 +1055,8 @@ fn main() {
             secrets_available,
             secret_set,
             secret_delete,
-            open_in_editor
+            open_in_editor,
+            set_background_mode
         ])
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
@@ -1027,9 +1093,32 @@ fn main() {
                 // single-window app with it) would already be gone by the
                 // time that round trip comes back.
                 api.prevent_close();
-                request_quit(window.app_handle());
+                match close_action(BACKGROUND_MODE.load(Ordering::SeqCst)) {
+                    CloseAction::HideToTray => {
+                        let _ = window.hide();
+                    }
+                    CloseAction::AskToQuit => request_quit(window.app_handle()),
+                }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running the Dagster Designer app");
+        .build(tauri::generate_context!())
+        .expect("error while building the Dagster Designer app")
+        .run(|_app, _event| {
+            // Clicking the Dock icon while the window is hidden in the tray brings it back.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = _event {
+                show_main_window(_app);
+            }
+        });
+}
+
+#[cfg(test)]
+mod tray_tests {
+    use super::*;
+
+    #[test]
+    fn close_hides_only_in_background_mode() {
+        assert_eq!(close_action(true), CloseAction::HideToTray);
+        assert_eq!(close_action(false), CloseAction::AskToQuit);
+    }
 }
