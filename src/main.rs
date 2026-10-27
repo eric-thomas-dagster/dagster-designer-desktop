@@ -717,9 +717,9 @@ fn set_background_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
     if app.tray_by_id(TRAY_ID).is_some() {
         return Ok(());
     }
-    let open = MenuItemBuilder::with_id("tray-open", "Open Dagster Designer").build(&app).map_err(|e| e.to_string())?;
-    let quit = MenuItemBuilder::with_id("tray-quit", "Quit").build(&app).map_err(|e| e.to_string())?;
-    let menu = MenuBuilder::new(&app).item(&open).separator().item(&quit).build().map_err(|e| e.to_string())?;
+    let open = tauri::menu::MenuItemBuilder::with_id("tray-open", "Open Dagster Designer").build(&app).map_err(|e| e.to_string())?;
+    let quit = tauri::menu::MenuItemBuilder::with_id("tray-quit", "Quit").build(&app).map_err(|e| e.to_string())?;
+    let menu = tauri::menu::MenuBuilder::new(&app).item(&open).separator().item(&quit).build().map_err(|e| e.to_string())?;
     let mut builder = tauri::tray::TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Dagster Designer: watching your Dagster+ runs")
         .menu(&menu)
